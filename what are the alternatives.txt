@@ -1,0 +1,18 @@
+Turns out this space is more active than you might expect — this is genuinely good news for your documentation, since it means "existing solutions" is a real section you can write with citations, not just "nothing exists."
+
+**1. Agfa SmartXR (commercial, real product)**
+The most directly comparable existing product. SmartPositioning augments a live camera stream by projecting the image area and AEC sensor positions onto the patient's body, letting the technician immediately see if the configuration is correct. It's part of a broader suite — SmartAlign gives live feedback on tube-to-panel alignment, and SmartDose uses 3D machine vision to determine patient thickness and adjust exposure automatically. This is enterprise hardware+software sold to hospitals — your project is the "indie, webcam-based, open-source" version of the same idea.
+
+**2. PIAA — academic research system (2025)**
+A proposed AI-driven Pre-imaging All-round Assistant for digital radiography, built around an RGB-Depth multi-camera array that automatically selects the right camera based on patient distance. The paper is explicit about why this is hard: DR has over 200 examination views each needing precise positioning, and the source-to-image distance varies from 100-180cm with the central X-ray angle ranging 0-30°, so image frames vary substantially. Worth citing in your doc as evidence this is a recognized open research problem, not something you're imagining.
+
+**3. AR-guided radiotherapy positioning (clinical study, not diagnostic X-ray)**
+A 3D virtual model built from the patient's CT data was aligned via AR tracking to guide daily setup for radiotherapy patients, tested on 40 patients. Results were mixed but promising — for chest and abdomen cancer patients specifically, AR guidance produced statistically significant reductions in setup error compared to conventional laser alignment. Different clinical context (radiotherapy setup, not a single diagnostic exposure) but conceptually adjacent — worth a mention with that distinction noted.
+
+**4. Camera placement research for pose-based AI assessment (2026)**
+Researchers generated over 460,000 synthetic depth images to determine the ideal camera position for AI-based patient pose assessment, finding that a camera positioned perpendicular to the target anatomy worked best, and a second camera added little benefit. This is directly useful to *you* — it answers a question you'll eventually hit (where do I put the webcam?) with actual data.
+
+**What this means for your doc's "alternative solutions" section:**
+Your honest positioning is: existing solutions either require expensive depth-camera hardware (PIAA, SmartXR) or are locked inside proprietary hospital equipment you'll never get access to as a student. Your project's differentiator is doing a lightweight, webcam-only version with off-the-shelf pose estimation — lower fidelity, but free, open, and buildable by one person. That's a legitimate and honest scope, not a weakness, as long as you state it that way rather than implying you're competing with SmartXR.
+
+Want me to add this "Related/Existing Work" section into the tech-stack doc, with these sources properly cited?

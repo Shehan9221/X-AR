@@ -1,0 +1,33 @@
+# Python
+venv/
+venv_old/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Environment variables
+.env
+
+# Video/image test files 
+*.mov
+
+# MediaPipe / model files
+*.task
+*.tflite
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# VS Code settings 
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Large reference docs 
+# docs/*.pdf

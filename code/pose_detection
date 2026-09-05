@@ -16,6 +16,25 @@ detector = vision.PoseLandmarker.create_from_options(options)
 cap = cv2.VideoCapture(0)
 frame_timestamp = 0
 
+def draw_mid_sagittal_line(frame,Rshoulder,Lshoulder,Rhip,Lhip ):
+
+    def find_midpoint(point1, point2):
+        return (int((point1[0] + point2[0]) / 2),int((point1[1] + point2[1]) / 2))
+    
+    def point_normalizer(pointcordinates):
+        height, width, _ = frame.shape
+        return (int(pointcordinates.x * width), int(pointcordinates.y * height))
+
+    nor_Rshoulder = point_normalizer(Rshoulder)
+    nor_Lshoulder = point_normalizer(Lshoulder)
+    nor_Rhip = point_normalizer(Rhip)
+    nor_Lhip = point_normalizer(Lhip)
+
+    shoulder_midpoint = find_midpoint(nor_Rshoulder, nor_Lshoulder)
+    hip_midpoint = find_midpoint(nor_Rhip, nor_Lhip)
+    cv2.line(frame, shoulder_midpoint, hip_midpoint, (0, 0, 255), 2)
+
+
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
@@ -38,6 +57,15 @@ while cap.isOpened():
             solutions.drawing_utils.draw_landmarks(
                 frame, proto, solutions.pose.POSE_CONNECTIONS
             )
+
+    #draw mdeial sagital lilne
+    if result.pose_landmarks:
+        Rshoulder = result.pose_landmarks[0][11]  # Right shoulder
+        Lshoulder = result.pose_landmarks[0][12]  # Left shoulder
+        Rhip = result.pose_landmarks[0][23]       # Right hip
+        Lhip = result.pose_landmarks[0][24]       # Left hip
+        draw_mid_sagittal_line(frame, Rshoulder, Lshoulder, Rhip, Lhip)
+
 
     cv2.imshow('Pose Detection', frame)
     if cv2.waitKey(5) & 0xFF == 27:  # ESC

@@ -5,6 +5,15 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from mediapipe.framework.formats import landmark_pb2
 from mediapipe import solutions
+import numpy as np
+
+
+import cv2
+import mediapipe as mp
+import numpy as np
+
+mp_pose = mp.solutions.pose
+mp_selfie = mp.solutions.selfie_segmentation
 
 base_options = python.BaseOptions(model_asset_path='pose_landmarker_full.task')
 options = vision.PoseLandmarkerOptions(
@@ -13,8 +22,64 @@ options = vision.PoseLandmarkerOptions(
 )
 detector = vision.PoseLandmarker.create_from_options(options)
 
-cap = cv2.VideoCapture(0)
+video_path = r"C:\Users\User\Downloads\6323043-uhd_2160_4096_30fps.mp4"  # Enter the video file path here
+cap = cv2.VideoCapture(video_path)
 frame_timestamp = 0
+
+def resize_for_display(frame, max_width=960, max_height=1080):
+    h, w = frame.shape[:2]
+    scale = min(max_width / w, max_height / h, 1.0)  # never upscale, only shrink
+    if scale < 1.0:
+        frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+    return frame
+
+def get_torso_reference(pose_landmarks, frame_shape):
+    """Shared helper: returns hip_y, shoulder_y, torso_length_px, and center x-coords."""
+    h, w = frame_shape[:2]
+    left_shoulder = pose_landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+    right_shoulder = pose_landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+    left_hip = pose_landmarks[mp_pose.PoseLandmark.LEFT_HIP]
+    right_hip = pose_landmarks[mp_pose.PoseLandmark.RIGHT_HIP]
+
+    shoulder_y = left_shoulder.y * h
+    hip_y = left_hip.y * h
+    torso_length_px = hip_y - shoulder_y
+
+    center_x = ((left_hip.x + right_hip.x) / 2) * w
+    shoulder_width_px = abs((right_shoulder.x - left_shoulder.x) * w)
+
+    return hip_y, torso_length_px, center_x, shoulder_width_px
+
+
+def draw_landmark_line(frame, pose_landmarks, frame_shape, k, label, color, width_ratio=0.6):
+    """
+    Generic line drawer: computes height as hip_y - k*torso_length,
+    and horizontal extent as width_ratio * shoulder_width, centered on hip x.
+    """
+    hip_y, torso_length_px, center_x, shoulder_width_px = get_torso_reference(pose_landmarks, frame_shape)
+
+    line_y = int(hip_y - k * torso_length_px)
+    half_width = int((width_ratio * shoulder_width_px) / 2)
+
+    x1, x2 = int(center_x - half_width), int(center_x + half_width)
+
+    cv2.line(frame, (x1, line_y), (x2, line_y), color, 2)
+    cv2.putText(frame, label, (x2 + 5, line_y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+    return line_y
+
+
+def draw_diaphragm_line(frame, pose_landmarks, frame_shape, k=0.50):
+    return draw_landmark_line(frame, pose_landmarks, frame_shape, k, "Diaphragm", (255, 200, 0))
+
+
+def draw_iliac_crest_line(frame, pose_landmarks, frame_shape, k=0.18):
+    return draw_landmark_line(frame, pose_landmarks, frame_shape, k, "Iliac Crest", (0, 200, 255))
+
+
+def draw_asis_line(frame, pose_landmarks, frame_shape, k=0.08):
+    return draw_landmark_line(frame, pose_landmarks, frame_shape, k, "ASIS", (0, 255, 0))
+
 
 def draw_mid_sagittal_line(frame,Rshoulder,Lshoulder,Rhip,Lhip ):
 
@@ -24,6 +89,19 @@ def draw_mid_sagittal_line(frame,Rshoulder,Lshoulder,Rhip,Lhip ):
     def point_normalizer(pointcordinates):
         height, width, _ = frame.shape
         return (int(pointcordinates.x * width), int(pointcordinates.y * height))
+    
+    def extend_line(p1, p2, extend_up=25, extend_down=100):
+        p1 = np.array(p1, dtype=float)  # shoulder midpoint
+        p2 = np.array(p2, dtype=float)  # hip midpoint
+
+        direction = p2 - p1
+        length = np.linalg.norm(direction)
+        unit = direction / length
+
+        new_top = p1 - unit * extend_up      # goes further upward
+        new_bottom = p2 + unit * extend_down # goes further downward
+
+        return tuple(new_top.astype(int)), tuple(new_bottom.astype(int))
 
     nor_Rshoulder = point_normalizer(Rshoulder)
     nor_Lshoulder = point_normalizer(Lshoulder)
@@ -32,7 +110,9 @@ def draw_mid_sagittal_line(frame,Rshoulder,Lshoulder,Rhip,Lhip ):
 
     shoulder_midpoint = find_midpoint(nor_Rshoulder, nor_Lshoulder)
     hip_midpoint = find_midpoint(nor_Rhip, nor_Lhip)
-    cv2.line(frame, shoulder_midpoint, hip_midpoint, (0, 0, 255), 2)
+    #cv2.line(frame, shoulder_midpoint, hip_midpoint, (0, 0, 255), 2)
+    new_top, new_bottom = extend_line(shoulder_midpoint, hip_midpoint)
+    cv2.line(frame, new_top, new_bottom, (0, 0, 255), 2)
 
 
 while cap.isOpened():
@@ -66,8 +146,15 @@ while cap.isOpened():
         Lhip = result.pose_landmarks[0][24]       # Left hip
         draw_mid_sagittal_line(frame, Rshoulder, Lshoulder, Rhip, Lhip)
 
+    # Draw anatomical lines for trunck
+    if result.pose_landmarks:
+        draw_diaphragm_line(frame, result.pose_landmarks[0], frame.shape)
+        draw_iliac_crest_line(frame, result.pose_landmarks[0], frame.shape)
+        draw_asis_line(frame, result.pose_landmarks[0], frame.shape)
+    
+    display_frame = resize_for_display(frame)
+    cv2.imshow("Pose Detection", display_frame)
 
-    cv2.imshow('Pose Detection', frame)
     if cv2.waitKey(5) & 0xFF == 27:  # ESC
         break
 

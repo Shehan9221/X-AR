@@ -8,23 +8,77 @@ from mediapipe import solutions
 import numpy as np
 
 
-import cv2
-import mediapipe as mp
-import numpy as np
 
-mp_pose = mp.solutions.pose
-mp_selfie = mp.solutions.selfie_segmentation
+#msl , interpupilary line of head
 
-base_options = python.BaseOptions(model_asset_path='pose_landmarker_full.task')
-options = vision.PoseLandmarkerOptions(
-    base_options=base_options,
-    running_mode=vision.RunningMode.VIDEO
-)
-detector = vision.PoseLandmarker.create_from_options(options)
+# --- Landmark indices (MediaPipe Face Mesh, refine_landmarks=True) ---
+LEFT_IRIS_CENTER = 468    # subject's left eye (mirrored image = viewer's right)
+RIGHT_IRIS_CENTER = 473   # subject's right eye
+ 
+# Points that sit on the facial midline, top to bottom.
+# 10: forehead/hairline, 168: nasion, 4: nose tip, 164: philtrum,
+# 0: upper lip center, 17: lower lip/mentolabial fold, 152: chin (menton)
+MIDLINE_LANDMARKS = [10, 168, 4, 164, 0, 17, 152]
 
-video_path = r"C:\Users\User\Downloads\6323043-uhd_2160_4096_30fps.mp4"  # Enter the video file path here
-cap = cv2.VideoCapture(video_path)
-frame_timestamp = 0
+ 
+def _to_px(landmark, w, h):
+    return np.array([landmark.x * w, landmark.y * h])
+ 
+ 
+def compute_interpupillary_line(face_landmarks, image_width, image_height):
+    """
+    face_landmarks: the .landmark list from a MediaPipe FaceMesh result
+    Returns dict with pupil points, midpoint, length, and tilt angle
+    (angle_deg == 0 means perfectly horizontal / no head roll).
+    """
+    p_left = _to_px(face_landmarks[LEFT_IRIS_CENTER], image_width, image_height)
+    p_right = _to_px(face_landmarks[RIGHT_IRIS_CENTER], image_width, image_height)
+ 
+    delta = p_right - p_left
+    angle_deg = np.degrees(np.arctan2(delta[1], delta[0]))  # tilt from horizontal
+ 
+    return {
+        "left_pupil": p_left,
+        "right_pupil": p_right,
+        "midpoint": (p_left + p_right) / 2,
+        "length": float(np.linalg.norm(delta)),
+        "angle_deg": float(angle_deg),   # + = right pupil lower, - = right pupil higher
+    }
+
+def compute_head_medial_sagittal_line(face_landmarks, image_width, image_height,
+                                  midline_indices=MIDLINE_LANDMARKS):
+    """
+    Fits a line through several midline landmarks (PCA / total-least-squares)
+    instead of just connecting two points, which makes it far less sensitive
+    to a single noisy landmark.
+ 
+    Returns dict with the fitted point set's centroid, unit direction vector,
+    and tilt_from_vertical_deg (0 == perfectly vertical / no rotation).
+    """
+    pts = np.array([_to_px(face_landmarks[i], image_width, image_height)
+                     for i in midline_indices])
+ 
+    centroid = pts.mean(axis=0)
+    centered = pts - centroid
+ 
+    # Principal axis of the midline points = best-fit line direction
+    _, _, vh = np.linalg.svd(centered)
+    direction = vh[0]
+    if direction[1] < 0:          # force direction to point "downward" (+y)
+        direction = -direction
+ 
+    angle_from_vertical = np.degrees(np.arctan2(direction[0], direction[1]))
+ 
+    return {
+        "points": pts,
+        "centroid": centroid,
+        "direction": direction,          # unit vector, points top->chin
+        "tilt_from_vertical_deg": float(angle_from_vertical),
+        "top_point": pts[0],
+        "bottom_point": pts[-1],
+    }
+ 
+
 
 def resize_for_display(frame, max_width=960, max_height=1080):
     h, w = frame.shape[:2]
@@ -32,6 +86,14 @@ def resize_for_display(frame, max_width=960, max_height=1080):
     if scale < 1.0:
         frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
     return frame
+
+def get_scaled_line_params(frame_shape, base_thickness=2, base_font_scale=0.5, reference_width=960):
+    """Scale line thickness and font size relative to frame resolution."""
+    w = frame_shape[1]
+    scale_factor = w / reference_width
+    thickness = max(1, int(base_thickness * scale_factor))
+    font_scale = base_font_scale * scale_factor
+    return thickness, font_scale
 
 def get_torso_reference(pose_landmarks, frame_shape):
     """Shared helper: returns hip_y, shoulder_y, torso_length_px, and center x-coords."""
@@ -50,30 +112,48 @@ def get_torso_reference(pose_landmarks, frame_shape):
 
     return hip_y, torso_length_px, center_x, shoulder_width_px
 
+def draw_head_medial_sagittal_line(frame, face_landmarks, frame_shape):
+    h, w = frame_shape[:2]
+    msl = compute_head_medial_sagittal_line(face_landmarks, w, h)
+    top_point = tuple(msl["top_point"].astype(int))
+    bottom_point = tuple(msl["bottom_point"].astype(int))
 
-def draw_landmark_line(frame, pose_landmarks, frame_shape, k, label, color, width_ratio=0.6):
-    """
-    Generic line drawer: computes height as hip_y - k*torso_length,
-    and horizontal extent as width_ratio * shoulder_width, centered on hip x.
-    """
+    thickness, font_scale = get_scaled_line_params(frame_shape)
+
+    cv2.line(frame, top_point, bottom_point, (0, 0, 255), thickness)
+    cv2.putText(frame, "msl", (bottom_point[0] + 5, bottom_point[1] + 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), max(1, thickness))
+    return msl
+
+
+def draw_landmark_line(frame, pose_landmarks, frame_shape, k, label, color, width_ratio=0.8):
     hip_y, torso_length_px, center_x, shoulder_width_px = get_torso_reference(pose_landmarks, frame_shape)
-
     line_y = int(hip_y - k * torso_length_px)
     half_width = int((width_ratio * shoulder_width_px) / 2)
-
     x1, x2 = int(center_x - half_width), int(center_x + half_width)
 
-    cv2.line(frame, (x1, line_y), (x2, line_y), color, 2)
-    cv2.putText(frame, label, (x2 + 5, line_y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+    thickness, font_scale = get_scaled_line_params(frame_shape)
 
+    cv2.line(frame, (x1, line_y), (x2, line_y), color, thickness)
+    cv2.putText(frame, label, (x2 + 5, line_y + 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, max(1, thickness ))
     return line_y
 
+def draw_interpupillary_line(frame, face_landmarks, frame_shape):
+    h, w = frame_shape[:2]
+    ip_line = compute_interpupillary_line(face_landmarks, w, h)
+    left_pupil = tuple(ip_line["left_pupil"].astype(int))
+    right_pupil = tuple(ip_line["right_pupil"].astype(int))
 
-def draw_diaphragm_line(frame, pose_landmarks, frame_shape, k=0.50):
+    thickness, font_scale = get_scaled_line_params(frame_shape)
+
+    cv2.line(frame, left_pupil, right_pupil, (0, 255, 255), thickness)
+    cv2.putText(frame, "ipl", (right_pupil[0] + 5, right_pupil[1] + 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), max(1, thickness))
+    return ip_line
+
+def draw_diaphragm_line(frame, pose_landmarks, frame_shape, k=0.55):
     return draw_landmark_line(frame, pose_landmarks, frame_shape, k, "Diaphragm", (255, 200, 0))
 
 
-def draw_iliac_crest_line(frame, pose_landmarks, frame_shape, k=0.18):
+def draw_iliac_crest_line(frame, pose_landmarks, frame_shape, k=0.20):
     return draw_landmark_line(frame, pose_landmarks, frame_shape, k, "Iliac Crest", (0, 200, 255))
 
 
@@ -87,10 +167,13 @@ def draw_mid_sagittal_line(frame,Rshoulder,Lshoulder,Rhip,Lhip ):
         return (int((point1[0] + point2[0]) / 2),int((point1[1] + point2[1]) / 2))
     
     def point_normalizer(pointcordinates):
+        """Convert relative coordinates (x, y) to absolute pixel coordinates based on frame size. out put - tuples"""  
         height, width, _ = frame.shape
         return (int(pointcordinates.x * width), int(pointcordinates.y * height))
     
     def extend_line(p1, p2, extend_up=25, extend_down=100):
+        """Extends a line segment between two points in both directions by specified distances."""
+
         p1 = np.array(p1, dtype=float)  # shoulder midpoint
         p2 = np.array(p2, dtype=float)  # hip midpoint
 
@@ -112,7 +195,37 @@ def draw_mid_sagittal_line(frame,Rshoulder,Lshoulder,Rhip,Lhip ):
     hip_midpoint = find_midpoint(nor_Rhip, nor_Lhip)
     #cv2.line(frame, shoulder_midpoint, hip_midpoint, (0, 0, 255), 2)
     new_top, new_bottom = extend_line(shoulder_midpoint, hip_midpoint)
-    cv2.line(frame, new_top, new_bottom, (0, 0, 255), 2)
+    cv2.line(frame, new_top, new_bottom, (0, 0, 255), 5)
+    cv2.putText(frame, "msl", (new_bottom[0] + 5, new_bottom[1] + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
+
+### vedio running loop - mediapipe pose detection
+
+#post astimation 
+
+mp_pose = mp.solutions.pose
+base_options = python.BaseOptions(model_asset_path='pose_landmarker_full.task')
+options = vision.PoseLandmarkerOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.VIDEO
+)
+detector = vision.PoseLandmarker.create_from_options(options)
+
+#face mesh detection
+
+mp_face_mesh = mp.solutions.face_mesh
+fm = mp_face_mesh.FaceMesh(
+    static_image_mode=False,      # False = video mode, enables landmark tracking/smoothing between frames
+    refine_landmarks=True,
+    max_num_faces=1
+) 
+
+
+#looop 
+
+video_path = r"C:\Users\User\Downloads\6799871-uhd_2160_4096_25fps.mp4"  # Enter the video file path here
+cap = cv2.VideoCapture(0)
+frame_timestamp = 0
 
 
 while cap.isOpened():
@@ -120,13 +233,20 @@ while cap.isOpened():
     if not success:
         break
 
+
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-
     result = detector.detect_for_video(mp_image, frame_timestamp)
     frame_timestamp += 33  # ~30fps
+    fm_results = fm.process(rgb_frame)
 
-    # Draw landmarks
+    #draw landmarks -> head
+    if fm_results.multi_face_landmarks:
+        for face_landmarks in fm_results.multi_face_landmarks:
+            draw_head_medial_sagittal_line(frame, face_landmarks.landmark, frame.shape)
+            draw_interpupillary_line(frame, face_landmarks.landmark, frame.shape)
+
+    # Draw landmarks -> trunk 
     if result.pose_landmarks:
         for pose_landmarks in result.pose_landmarks:
             proto = landmark_pb2.NormalizedLandmarkList()
@@ -134,9 +254,17 @@ while cap.isOpened():
                 landmark_pb2.NormalizedLandmark(x=lm.x, y=lm.y, z=lm.z)
                 for lm in pose_landmarks
             ])
-            solutions.drawing_utils.draw_landmarks(
-                frame, proto, solutions.pose.POSE_CONNECTIONS
+        solutions.drawing_utils.draw_landmarks(
+            frame,
+            proto,
+            solutions.pose.POSE_CONNECTIONS,
+            landmark_drawing_spec=solutions.drawing_utils.DrawingSpec(
+                color=(0, 255, 0), thickness=4, circle_radius=5
+            ),
+            connection_drawing_spec=solutions.drawing_utils.DrawingSpec(
+                color=(255, 255, 255), thickness=4
             )
+        )
 
     #draw mdeial sagital lilne
     if result.pose_landmarks:

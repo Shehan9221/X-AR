@@ -40,8 +40,7 @@ class HeadPoseAssessment:
     RIGHT_IRIS_CENTER = 473   # subject's right eye
 
     # Points that sit on the facial midline, top to bottom.
-    # 10: forehead/hairline, 168: nasion, 4: nose tip, 164: philtrum,
-    # 0: upper lip center, 17: lower lip/mentolabial fold, 152: chin (menton)
+    # 10: forehead/hairline, 168: nasion, 4: nose tip, 164: philtrum, 0: upper lip center, 17: lower lip/mentolabial fold, 152: chin (menton)
     MIDLINE_LANDMARKS = [10, 168, 4, 164, 0, 17, 152]
 
     def __init__(self, static_image_mode=False, refine_landmarks=True, max_num_faces=1):
@@ -153,6 +152,59 @@ class HeadAnatomicalLine:
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), max(1, thickness))
         return ip_line
 
+class HeadPossitioningTracker:
+    """Computes head positioning metrics based on detected landmarks."""
+    def assess_head_tilt(self, sagittal_result, thresholds=None, mirrored=False):
+        """
+        sagittal_result: dict from compute_head_medial_sagittal_line()
+        mirrored: True if your feed is a selfie-style mirrored preview — this
+                flips which raw image side maps to the patient's anatomical
+                left/right. Verify empirically (see note below) rather than
+                assuming.
+
+        Returns: status ('pass'/'borderline'/'fail'), side ('left'/'right'/'none'),
+                angle_deg (signed), abs_angle_deg
+        """
+        HEAD_TILT_THRESHOLDS_DEG = {
+        "pass": 3.0,       # |angle| <= 3°  -> no clinically relevant tilt
+        "borderline": 6.0, # 3° < |angle| <= 6° -> borderline, flag for review
+        # anything beyond "borderline" -> fail
+        }
+
+        if thresholds is None:
+            thresholds = HEAD_TILT_THRESHOLDS_DEG
+
+        angle_deg = sagittal_result["tilt_from_vertical_deg"]
+        abs_angle = abs(angle_deg)
+
+        if abs_angle <= thresholds["pass"]:
+            status, side = "pass", "none"
+        else:
+            status = "borderline" if abs_angle <= thresholds["borderline"] else "fail"
+
+            # direction points top_point -> bottom_point (forced +y).
+            # angle_deg > 0 means the line leans toward +x as it descends,
+            # i.e. the bottom (chin) sits right of the top in image space.
+            tilts_toward_image_right = angle_deg > 0
+            if mirrored:
+                side = "left" if tilts_toward_image_right else "right"
+            else:
+                side = "right" if tilts_toward_image_right else "left"
+
+        return {
+            "status": status,
+            "side": side,
+            "angle_deg": angle_deg,
+            "abs_angle_deg": abs_angle,
+        }
+        """Assesses head tilt based on msl of head."""
+    def show_head_tilt_assessment(self, frame,face_landmark, thresholds=None, mirrored=False):
+        w,h= frame.shape[:2]
+        sagittal_result = HeadAnatomicalLine().compute_head_medial_sagittal_line(face_landmark,h,w)
+        assessment = self.assess_head_tilt(sagittal_result, thresholds, mirrored)
+        text = f"Head Tilt: {assessment['status']} ({assessment['side']}, {assessment['angle_deg']:.1f}°)"
+        cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        
 
 # ============================================================
 # TRUNK
@@ -203,20 +255,21 @@ class TrunkAnatomicalLine:
         left_hip = pose_landmarks[mp_pose.PoseLandmark.LEFT_HIP]
         right_hip = pose_landmarks[mp_pose.PoseLandmark.RIGHT_HIP]
 
-        shoulder_y = left_shoulder.y * h
-        hip_y = left_hip.y * h
-        torso_length_px = hip_y - shoulder_y
 
-        center_x = ((left_hip.x + right_hip.x) / 2) * w
-        shoulder_width_px = abs((right_shoulder.x - left_shoulder.x) * w)
+        hip_center = (((left_hip.x + right_hip.x)*w / 2), ((left_hip.y + right_hip.y)*h / 2))
+        shoulder_center = (((left_shoulder.x + right_shoulder.x)*w / 2),(((left_shoulder.y + right_shoulder.y) *h/ 2)))
+        torso_length_px = np.sqrt((shoulder_center[0] - hip_center[0]) ** 2 + (shoulder_center[1] - hip_center[1]) ** 2)
+        hip_center_x = hip_center[0]
+        shoulder_width_px = np.sqrt(((left_shoulder.x - right_shoulder.x)*w) ** 2 + ((left_shoulder.y - right_shoulder.y)* h) ** 2)
+    
 
-        return hip_y, torso_length_px, center_x, shoulder_width_px
+        return hip_center, torso_length_px, hip_center_x, shoulder_width_px
 
     def draw_landmark_line(self, frame, pose_landmarks, frame_shape, k, label, color, width_ratio=0.8):
-        hip_y, torso_length_px, center_x, shoulder_width_px = self.get_torso_reference(pose_landmarks, frame_shape)
-        line_y = int(hip_y - k * torso_length_px)
+        hip_center, torso_length_px, hip_center_x, shoulder_width_px = self.get_torso_reference(pose_landmarks, frame_shape)
+        line_y = int(hip_center[1] - k * torso_length_px)
         half_width = int((width_ratio * shoulder_width_px) / 2)
-        x1, x2 = int(center_x - half_width), int(center_x + half_width)
+        x1, x2 = int(hip_center_x - half_width), int(hip_center_x + half_width)
 
         thickness, font_scale = get_scaled_line_params(frame_shape)
 
@@ -287,6 +340,7 @@ class VideoLoop:
 
         self.head_pose_assessment = HeadPoseAssessment()
         self.head_anatomical_line = HeadAnatomicalLine()
+        self.head_possitioning_tracker = HeadPossitioningTracker()
 
         self.trunk_pose_assessment = TrunkPoseAssessment(model_asset_path=model_asset_path)
         self.trunk_anatomical_line = TrunkAnatomicalLine()
@@ -301,6 +355,7 @@ class VideoLoop:
         for face_landmarks in face_landmarks_list:
             self.head_anatomical_line.draw_head_medial_sagittal_line(frame, face_landmarks, frame.shape)
             self.head_anatomical_line.draw_interpupillary_line(frame, face_landmarks, frame.shape)
+            self.head_possitioning_tracker.show_head_tilt_assessment(frame,face_landmarks,mirrored=True)
 
         # --- Trunk ---
         pose_landmarks, result = self.trunk_pose_assessment.get_pose_landmarks(mp_image, self.frame_timestamp)

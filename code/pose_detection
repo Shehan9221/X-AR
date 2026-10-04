@@ -11,6 +11,8 @@ import numpy as np
 # Shared utility functions (used by both Head and Trunk classes)
 # ============================================================
 
+
+
 def resize_for_display(frame, max_width=960, max_height=1080):
     h, w = frame.shape[:2]
     scale = min(max_width / w, max_height / h, 1.0)  # never upscale, only shrink
@@ -28,6 +30,48 @@ def get_scaled_line_params(frame_shape, base_thickness=2, base_font_scale=0.5, r
     return thickness, font_scale
 
 
+
+# ============================================================
+# SWITCHES (on/off for every overlay)
+# ============================================================
+
+class Switches:
+    """Keyboard-controlled on/off flags. Number keys toggle each overlay."""
+
+    def __init__(self):
+        # (key, name, starts_on)
+        self._items = [
+            ("1", "trunk_skeleton", True),
+            ("2", "trunk_msl",      True),
+            ("3", "diaphragm",      True),
+            ("4", "iliac_crest",    True),
+            ("5", "asis",           True),
+            ("6", "head_mesh",      False),
+            ("7", "head_msl",       True),
+            ("8", "ipl",            True),
+            ("9", "head_tilt",      True),
+        ]
+        self.flags = {name: on for _, name, on in self._items}
+        self.keys = {ord(key): name for key, name, _ in self._items}
+
+    def __getitem__(self, name):
+        return self.flags[name]
+
+    def any_on(self, *names):
+        return any(self.flags[n] for n in names)
+
+    def handle_key(self, k):
+        if k in self.keys:
+            name = self.keys[k]
+            self.flags[name] = not self.flags[name]
+
+    def draw_status(self, frame):
+        for i, (key, name, _) in enumerate(self._items):
+            on = self.flags[name]
+            color = (0, 255, 0) if on else (0, 0, 255)
+            cv2.putText(frame, f"[{key}] {name}: {'ON' if on else 'OFF'}",
+                        (10, frame.shape[0] - 15 - 22 * i),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 # ============================================================
 # HEAD
 # ============================================================
@@ -204,6 +248,9 @@ class HeadPossitioningTracker:
         assessment = self.assess_head_tilt(sagittal_result, thresholds, mirrored)
         text = f"Head Tilt: {assessment['status']} ({assessment['side']}, {assessment['angle_deg']:.1f}°)"
         cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+    #head roatation assesment around y axis
+
         
 
 # ============================================================
@@ -320,7 +367,7 @@ class TrunkAnatomicalLine:
         new_top, new_bottom = extend_line(shoulder_midpoint, hip_midpoint)
         cv2.line(frame, new_top, new_bottom, (0, 0, 255), 5)
         cv2.putText(frame, "msl", (new_bottom[0] + 5, new_bottom[1] + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
 
 # ============================================================
@@ -344,52 +391,65 @@ class VideoLoop:
 
         self.trunk_pose_assessment = TrunkPoseAssessment(model_asset_path=model_asset_path)
         self.trunk_anatomical_line = TrunkAnatomicalLine()
+        self.switches = Switches()
 
     def process_frame(self, frame):
         """Runs detection + draws all anatomical lines on a single frame. Returns the annotated frame."""
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-
         # --- Head ---
+        sw = self.switches
+
+        
         face_landmarks_list = self.head_pose_assessment.get_face_landmarks_list(rgb_frame)
         for face_landmarks in face_landmarks_list:
-            self.head_anatomical_line.draw_head_medial_sagittal_line(frame, face_landmarks, frame.shape)
-            self.head_anatomical_line.draw_interpupillary_line(frame, face_landmarks, frame.shape)
-            self.head_possitioning_tracker.show_head_tilt_assessment(frame,face_landmarks,mirrored=True)
+            if sw["head_msl"]:
+                self.head_anatomical_line.draw_head_medial_sagittal_line(frame, face_landmarks, frame.shape)
+            if sw["ipl"]:
+                self.head_anatomical_line.draw_interpupillary_line(frame, face_landmarks, frame.shape)
+            if sw["head_tilt"]:
+                self.head_possitioning_tracker.show_head_tilt_assessment(frame,face_landmarks,mirrored=True)
 
         # --- Trunk ---
+        
         pose_landmarks, result = self.trunk_pose_assessment.get_pose_landmarks(mp_image, self.frame_timestamp)
         self.frame_timestamp += 33  # ~30fps
 
-        if result.pose_landmarks:
-            for pl in result.pose_landmarks:
-                proto = landmark_pb2.NormalizedLandmarkList()
-                proto.landmark.extend([
-                    landmark_pb2.NormalizedLandmark(x=lm.x, y=lm.y, z=lm.z)
-                    for lm in pl
-                ])
-            solutions.drawing_utils.draw_landmarks(
-                frame,
-                proto,
-                solutions.pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=solutions.drawing_utils.DrawingSpec(
-                    color=(0, 255, 0), thickness=4, circle_radius=5
-                ),
-                connection_drawing_spec=solutions.drawing_utils.DrawingSpec(
-                    color=(255, 255, 255), thickness=4
+        if sw.any_on("trunk_skeleton","head_mesh"):
+            if result.pose_landmarks:
+                for pl in result.pose_landmarks:
+                    proto = landmark_pb2.NormalizedLandmarkList()
+                    proto.landmark.extend([
+                        landmark_pb2.NormalizedLandmark(x=lm.x, y=lm.y, z=lm.z)
+                        for lm in pl
+                    ])
+                solutions.drawing_utils.draw_landmarks(
+                    frame,
+                    proto,
+                    solutions.pose.POSE_CONNECTIONS,
+                    landmark_drawing_spec=solutions.drawing_utils.DrawingSpec(
+                        color=(0, 255, 0), thickness=4, circle_radius=5
+                    ),
+                    connection_drawing_spec=solutions.drawing_utils.DrawingSpec(
+                        color=(255, 255, 255), thickness=4
+                    )
                 )
-            )
 
+        
         if pose_landmarks is not None:
             Rshoulder = pose_landmarks[11]  # Right shoulder
             Lshoulder = pose_landmarks[12]  # Left shoulder
             Rhip = pose_landmarks[23]       # Right hip
             Lhip = pose_landmarks[24]       # Left hip
-            self.trunk_anatomical_line.draw_mid_sagittal_line(frame, Rshoulder, Lshoulder, Rhip, Lhip)
+            if sw["trunk_msl"]:
+                self.trunk_anatomical_line.draw_mid_sagittal_line(frame, Rshoulder, Lshoulder, Rhip, Lhip)
 
-            self.trunk_anatomical_line.draw_diaphragm_line(frame, pose_landmarks, frame.shape)
-            self.trunk_anatomical_line.draw_iliac_crest_line(frame, pose_landmarks, frame.shape)
-            self.trunk_anatomical_line.draw_asis_line(frame, pose_landmarks, frame.shape)
+            if sw["diaphragm"]:
+                self.trunk_anatomical_line.draw_diaphragm_line(frame, pose_landmarks, frame.shape)
+            if sw["iliac_crest"]:
+                self.trunk_anatomical_line.draw_iliac_crest_line(frame, pose_landmarks, frame.shape)
+            if sw["asis"]:
+                self.trunk_anatomical_line.draw_asis_line(frame, pose_landmarks, frame.shape)
 
         return frame
 
@@ -402,10 +462,13 @@ class VideoLoop:
 
             frame = self.process_frame(frame)
             display_frame = resize_for_display(frame)
+            self.switches.draw_status(frame)
             cv2.imshow("Pose Detection", display_frame)
 
-            if cv2.waitKey(5) & 0xFF == 27:  # ESC
+            k = cv2.waitKey(5) & 0xFF
+            if k == 27:                                # ESC
                 break
+            self.switches.handle_key(k)
 
         self.release()
 
@@ -417,3 +480,4 @@ class VideoLoop:
 if __name__ == "__main__":
     video_loop = VideoLoop(video_source=0)
     video_loop.run()
+    

@@ -41,15 +41,16 @@ class Switches:
     def __init__(self):
         # (key, name, starts_on)
         self._items = [
-            ("1", "trunk_skeleton", True),
-            ("2", "trunk_msl",      True),
-            ("3", "diaphragm",      True),
-            ("4", "iliac_crest",    True),
-            ("5", "asis",           True),
-            ("6", "head_mesh",      False),
-            ("7", "head_msl",       True),
-            ("8", "ipl",            True),
-            ("9", "head_tilt",      True),
+            ("A", "trunk_skeleton", True),
+            ("B", "trunk_msl",      True),
+            ("C", "diaphragm",      True),
+            ("D", "iliac_crest",    True),
+            ("E", "asis",           True),
+            ("F", "head_mesh",      False),
+            ("G", "head_msl",       True),
+            ("H", "ipl",            True),
+            ("I", "head_tilt",      True),
+            ("J", "head_rotation",  True),
         ]
         self.flags = {name: on for _, name, on in self._items}
         self.keys = {ord(key): name for key, name, _ in self._items}
@@ -170,14 +171,19 @@ class HeadAnatomicalLine:
             "bottom_point": pts[-1],
         }
 
-    def draw_head_medial_sagittal_line(self, frame, face_landmarks, frame_shape):
+    def draw_head_medial_sagittal_line(self, frame, face_landmarks, frame_shape, msl=None):
         h, w = frame_shape[:2]
-        msl = self.compute_head_medial_sagittal_line(face_landmarks, w, h)
-        top_point = tuple(msl["top_point"].astype(int))
-        bottom_point = tuple(msl["bottom_point"].astype(int))
+        if msl is None:
+            msl = self.compute_head_medial_sagittal_line(face_landmarks, w, h)
+
+        c, d = msl["centroid"], msl["direction"]
+        # span the fitted line over the extent of the midline points
+        t_top = np.dot(msl["top_point"] - c, d)
+        t_bot = np.dot(msl["bottom_point"] - c, d)
+        top_point = tuple((c + t_top * d).astype(int))
+        bottom_point = tuple((c + t_bot * d).astype(int))
 
         thickness, font_scale = get_scaled_line_params(frame_shape)
-
         cv2.line(frame, top_point, bottom_point, (0, 0, 255), thickness)
         cv2.putText(frame, "msl", (bottom_point[0] + 5, bottom_point[1] + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 255), max(1, thickness))
@@ -198,6 +204,15 @@ class HeadAnatomicalLine:
 
 class HeadPossitioningTracker:
     """Computes head positioning metrics based on detected landmarks."""
+    ROTATION_POINTS = {            # (subject's RIGHT, subject's LEFT)
+        "iris":         (468, 473),
+        "outer_corner": (33, 263),
+        "inner_corner": (133, 362),}
+        
+    HEAD_ROTATION_THRESHOLDS_PCT = {"pass": 5.0, "borderline": 10.0}
+
+    #assess head tilt based on medial sagittal line of head
+    
     def assess_head_tilt(self, sagittal_result, thresholds=None, mirrored=False):
         """
         sagittal_result: dict from compute_head_medial_sagittal_line()
@@ -242,13 +257,84 @@ class HeadPossitioningTracker:
             "abs_angle_deg": abs_angle,
         }
         """Assesses head tilt based on msl of head."""
-    def show_head_tilt_assessment(self, frame,face_landmark, thresholds=None, mirrored=False):
-        w,h= frame.shape[:2]
-        sagittal_result = HeadAnatomicalLine().compute_head_medial_sagittal_line(face_landmark,h,w)
-        assessment = self.assess_head_tilt(sagittal_result, thresholds, mirrored)
-        text = f"Head Tilt: {assessment['status']} ({assessment['side']}, {assessment['angle_deg']:.1f}°)"
-        cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
+    def show_head_tilt_assessment(self, frame, face_landmark, msl=None,
+                                  thresholds=None, mirrored=False):
+        h, w = frame.shape[:2]
+        if msl is None:
+            msl = HeadAnatomicalLine().compute_head_medial_sagittal_line(face_landmark, w, h)
+        assessment = self.assess_head_tilt(msl, thresholds, mirrored)
+
+        colors = {"pass": (0, 200, 0), "borderline": (0, 200, 255), "fail": (0, 0, 255)}
+        color = colors[assessment["status"]]
+
+        text = (f"Head Tilt: {assessment['status']} "
+                f"({assessment['side']}, {assessment['angle_deg']:.1f}°)")
+        cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        return assessment
+
+    @staticmethod
+    def _dist_to_msl(p, msl):
+        """Perpendicular distance and foot point of p on the fitted MSL."""
+        c, d = msl["centroid"], msl["direction"]      # d is a unit vector
+        foot = c + np.dot(p - c, d) * d
+        return float(np.linalg.norm(p - foot)), foot
+
+    def assess_head_rotation(self, face_landmarks, msl, w, h, mode="iris",
+                             thresholds=None, mirrored=False):
+        """
+        Rotation about the vertical axis using the SAME fitted MSL that is drawn.
+        asymmetry_pct > 0 => subject's right eye farther from MSL
+                          => head turned toward subject's left.
+        """
+        thresholds = thresholds or self.HEAD_ROTATION_THRESHOLDS_PCT
+        r_idx, l_idx = self.ROTATION_POINTS[mode]
+        to_px = HeadAnatomicalLine._to_px
+        r_pt = to_px(face_landmarks[r_idx], w, h)
+        l_pt = to_px(face_landmarks[l_idx], w, h)
+
+        d_r, foot_r = self._dist_to_msl(r_pt, msl)
+        d_l, foot_l = self._dist_to_msl(l_pt, msl)
+
+        total = d_r + d_l
+        asym = (d_r - d_l) / total * 100.0 if total > 0 else 0.0
+        abs_asym = abs(asym)
+
+        if abs_asym <= thresholds["pass"]:
+            status, side = "pass", "none"
+        else:
+            status = "borderline" if abs_asym <= thresholds["borderline"] else "fail"
+            side = "left" if asym > 0 else "right"
+            if mirrored:
+                side = "right" if side == "left" else "left"
+
+        return {"status": status, "side": side,
+                "asymmetry_pct": asym, "abs_asymmetry_pct": abs_asym,
+                "dist_right": d_r, "dist_left": d_l,
+                "eye_pts": (r_pt, l_pt), "feet": (foot_r, foot_l)}
+
+    def show_head_rotation(self, frame, face_landmark, msl, mode="iris",
+                           thresholds=None, mirrored=False):
+        h, w = frame.shape[:2]
+        res = self.assess_head_rotation(face_landmark, msl, w, h, mode, thresholds, mirrored)
+
+        colors = {"pass": (0, 200, 0), "borderline": (0, 200, 255), "fail": (0, 0, 255)}
+        color = colors[res["status"]]
+        thickness, font_scale = get_scaled_line_params(frame.shape)
+
+        for pt, foot, dist, label in zip(res["eye_pts"], res["feet"],
+                                         (res["dist_right"], res["dist_left"]), ("R", "L")):
+            p, f = tuple(pt.astype(int)), tuple(foot.astype(int))
+            cv2.line(frame, p, f, color, thickness)
+            cv2.circle(frame, p, 3, color, -1)
+            cv2.circle(frame, f, 3, (255, 255, 0), -1)
+            mid = ((pt + foot) / 2).astype(int)
+            cv2.putText(frame, f"{label}:{dist:.0f}px", (mid[0] - 20, mid[1] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.9, color, 1)
+
+        text = f"Head Rotation: {res['status']} ({res['side']}, {res['asymmetry_pct']:+.1f}%)"
+        cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        return res
     #head roatation assesment around y axis
 
         
@@ -409,6 +495,9 @@ class VideoLoop:
                 self.head_anatomical_line.draw_interpupillary_line(frame, face_landmarks, frame.shape)
             if sw["head_tilt"]:
                 self.head_possitioning_tracker.show_head_tilt_assessment(frame,face_landmarks,mirrored=True)
+            if sw["head_rotation"]:
+                msl = self.head_anatomical_line.compute_head_medial_sagittal_line(face_landmarks, frame.shape[1], frame.shape[0])
+                self.head_possitioning_tracker.show_head_rotation(frame, face_landmarks, msl, mirrored=True)
 
         # --- Trunk ---
         

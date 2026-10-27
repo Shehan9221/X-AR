@@ -382,8 +382,13 @@ class TrunkPoseAssessment:
 class TrunkAnatomicalLine:
     """Computes and draws anatomical reference lines on the trunk/torso."""
 
-    def get_torso_reference(self, pose_landmarks, frame_shape):
-        """Shared helper: returns hip_y, torso_length_px, center_x, and shoulder_width_px."""
+    def get_torso_geometry(self, pose_landmarks, frame_shape):
+        """Returns every torso reference value in pixels.
+
+        Keeping the full geometry in one place lets callers that only need a
+        subset (the line-drawing helpers below, or the GUI overlay) reuse the
+        exact same reference instead of recomputing midpoints.
+        """
         h, w = frame_shape[:2]
         mp_pose = solutions.pose
         left_shoulder = pose_landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
@@ -391,15 +396,25 @@ class TrunkAnatomicalLine:
         left_hip = pose_landmarks[mp_pose.PoseLandmark.LEFT_HIP]
         right_hip = pose_landmarks[mp_pose.PoseLandmark.RIGHT_HIP]
 
-
         hip_center = (((left_hip.x + right_hip.x)*w / 2), ((left_hip.y + right_hip.y)*h / 2))
         shoulder_center = (((left_shoulder.x + right_shoulder.x)*w / 2),(((left_shoulder.y + right_shoulder.y) *h/ 2)))
         torso_length_px = np.sqrt((shoulder_center[0] - hip_center[0]) ** 2 + (shoulder_center[1] - hip_center[1]) ** 2)
         hip_center_x = hip_center[0]
         shoulder_width_px = np.sqrt(((left_shoulder.x - right_shoulder.x)*w) ** 2 + ((left_shoulder.y - right_shoulder.y)* h) ** 2)
-    
 
-        return hip_center, torso_length_px, hip_center_x, shoulder_width_px
+        return {
+            "hip_center": hip_center,
+            "shoulder_center": shoulder_center,
+            "torso_length_px": torso_length_px,
+            "hip_center_x": hip_center_x,
+            "shoulder_width_px": shoulder_width_px,
+        }
+
+    def get_torso_reference(self, pose_landmarks, frame_shape):
+        """Shared helper: returns hip_y, torso_length_px, center_x, and shoulder_width_px."""
+        geo = self.get_torso_geometry(pose_landmarks, frame_shape)
+        return (geo["hip_center"], geo["torso_length_px"],
+                geo["hip_center_x"], geo["shoulder_width_px"])
 
     def draw_landmark_line(self, frame, pose_landmarks, frame_shape, k, label, color, width_ratio=0.8):
         hip_center, torso_length_px, hip_center_x, shoulder_width_px = self.get_torso_reference(pose_landmarks, frame_shape)

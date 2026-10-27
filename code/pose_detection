@@ -1,4 +1,5 @@
 import cv2
+import math
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -51,6 +52,8 @@ class Switches:
             ("H", "ipl",            True),
             ("I", "head_tilt",      True),
             ("J", "head_rotation",  True),
+            ("K", "trunk_level",    True),
+            ("L", "trunk_rotation", True),
         ]
         self.flags = {name: on for _, name, on in self._items}
         self.keys = {ord(key): name for key, name, _ in self._items}
@@ -456,6 +459,251 @@ class TrunkAnatomicalLine:
         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
 
+class TrunkPositioningTracker:
+    """Computes trunk positioning metrics and draws coloured overlay panels."""
+    L_SHO, R_SHO, L_HIP, R_HIP = 11, 12, 23, 24
+
+    GREEN = (0, 200, 0)
+    YELLOW = (0, 200, 255)
+    RED = (0, 0, 255)
+    WHITE = (255, 255, 255)
+
+    def __init__(self, rotation_tol_deg=5.0, level_tol_deg=3.0,
+                 min_visibility=0.5, smoothing=0.8):
+        self.rotation_tol = rotation_tol_deg
+        self.level_tol = level_tol_deg
+        self.min_vis = min_visibility
+        self.smoothing = smoothing
+        self.baseline = None
+        self._smoothed = {}
+
+    # ---------- helpers ----------
+    @staticmethod
+    def _dist(a, b, w, h):
+        return math.hypot((a.x - b.x) * w, (a.y - b.y) * h)
+
+    @staticmethod
+    def _yaw_deg(world, left_i, right_i):
+        """Signed yaw in the x-z plane. 0 = square to camera,
+        + = person's left side pushed away from camera."""
+        dx = world[left_i].x - world[right_i].x
+        dz = world[left_i].z - world[right_i].z
+        return math.degrees(math.atan2(dz, dx))
+
+    @staticmethod
+    def _tilt_deg(left, right, w, h):
+        """Angle of the right->left line vs the image horizontal.
+        0 = level, + = person's left side lower."""
+        dx = (left.x - right.x) * w
+        dy = (left.y - right.y) * h
+        return math.degrees(math.atan2(dy, dx))
+
+    def _smooth(self, key, value):
+        if key not in self._smoothed:
+            self._smoothed[key] = value
+        else:
+            a = self.smoothing
+            self._smoothed[key] = a * self._smoothed[key] + (1 - a) * value
+        return self._smoothed[key]
+
+    def _get_landmarks(self, result):
+        if not result or not result.pose_landmarks or not result.pose_world_landmarks:
+            return None, None
+        img = result.pose_landmarks[0]
+        world = result.pose_world_landmarks[0]
+        idx = (self.L_SHO, self.R_SHO, self.L_HIP, self.R_HIP)
+        if min(img[i].visibility for i in idx) < self.min_vis:
+            return None, None
+        return img, world
+
+    def _grade(self, value, tol):
+        """Returns (grade_str, abs_value). OK / BORDERLINE / FAIL."""
+        av = abs(value)
+        if av <= tol:
+            return "OK", av
+        elif av <= tol * 2:
+            return "BORDERLINE", av
+        else:
+            return "FAIL", av
+
+    def _color_for(self, value, tol):
+        """Green / yellow / red depending on how far *value* is from tolerance."""
+        grade, _ = self._grade(value, tol)
+        if grade == "OK":
+            return self.GREEN
+        elif grade == "BORDERLINE":
+            return self.YELLOW
+        return self.RED
+
+    # ---------- measurements ----------
+    def compute_rotation(self, img, world, w, h):
+        out = {}
+        out["shoulder_yaw"] = self._yaw_deg(world, self.L_SHO, self.R_SHO)
+        out["hip_yaw"] = self._yaw_deg(world, self.L_HIP, self.R_HIP)
+        out["twist"] = out["shoulder_yaw"] - out["hip_yaw"]
+
+        sho_mid = ((img[self.L_SHO].x + img[self.R_SHO].x) / 2,
+                   (img[self.L_SHO].y + img[self.R_SHO].y) / 2)
+        hip_mid = ((img[self.L_HIP].x + img[self.R_HIP].x) / 2,
+                   (img[self.L_HIP].y + img[self.R_HIP].y) / 2)
+        torso = math.hypot((sho_mid[0] - hip_mid[0]) * w,
+                           (sho_mid[1] - hip_mid[1]) * h)
+
+        out["sho_ratio"] = self._dist(img[self.L_SHO], img[self.R_SHO], w, h) / torso
+        out["hip_ratio"] = self._dist(img[self.L_HIP], img[self.R_HIP], w, h) / torso
+
+        if self.baseline:
+            c = min(1.0, out["sho_ratio"] / self.baseline["sho_ratio"])
+            out["shoulder_angle_2d"] = math.degrees(math.acos(c))
+        return out
+
+    def assess_level(self, img, w, h):
+        """Are the shoulders level? Are the hips level?"""
+        sho_tilt = self._tilt_deg(img[self.L_SHO], img[self.R_SHO], w, h)
+        hip_tilt = self._tilt_deg(img[self.L_HIP], img[self.R_HIP], w, h)
+        return {
+            "shoulder_tilt": sho_tilt,
+            "hip_tilt": hip_tilt,
+            "tilt_diff": sho_tilt - hip_tilt,
+            "shoulders_level": abs(sho_tilt) <= self.level_tol,
+            "hips_level": abs(hip_tilt) <= self.level_tol,
+        }
+
+    # ---------- main entry points ----------
+    def calibrate(self, result, w, h):
+        """Call while the person stands square to the camera."""
+        img, world = self._get_landmarks(result)
+        if img is None:
+            return False
+        r = self.compute_rotation(img, world, w, h)
+        self.baseline = {"sho_ratio": r["sho_ratio"], "hip_ratio": r["hip_ratio"]}
+        return True
+
+    def update(self, result, w, h):
+        img, world = self._get_landmarks(result)
+        if img is None:
+            return None
+
+        m = {}
+        m.update(self.compute_rotation(img, world, w, h))
+        m.update(self.assess_level(img, w, h))
+
+        for k, v in list(m.items()):
+            if isinstance(v, float):
+                m[k] = self._smooth(k, v)
+
+        m["rotation_ok"] = abs(m["shoulder_yaw"]) <= self.rotation_tol
+        m["shoulders_level"] = abs(m["shoulder_tilt"]) <= self.level_tol
+        m["hips_level"] = abs(m["hip_tilt"]) <= self.level_tol
+        m["all_ok"] = m["rotation_ok"] and m["shoulders_level"] and m["hips_level"]
+
+        m["pts"] = {
+            i: (int(img[i].x * w), int(img[i].y * h))
+            for i in (self.L_SHO, self.R_SHO, self.L_HIP, self.R_HIP)
+        }
+        return m
+
+    # ---------- overlay drawing ----------
+    def _draw_rows(self, frame, rows, origin, width=420):
+        """Draw a black panel with coloured text rows at origin=(x, y)."""
+        x0, y0 = origin
+        cv2.rectangle(frame, (x0, y0), (x0 + width, y0 + 12 + 28 * len(rows)), (0, 0, 0), -1)
+        y = y0 + 28
+        for text, color in rows:
+            cv2.putText(frame, text, (x0 + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            y += 28
+
+    def _row(self, name, value, tol, neg_text, pos_text):
+        grade, _ = self._grade(value, tol)
+        color = self._color_for(value, tol)
+        if grade == "OK":
+            return f"{name}: OK", color
+        side = pos_text if value > 0 else neg_text
+        return f"{name}: {grade} - {side} ({abs(value):.1f} deg)", color
+
+    def show_level(self, frame, m):
+        """Shoulder line and hip line, coloured by how far from level they are."""
+        if m is None:
+            return frame
+        p = m["pts"]
+        sho_col = self._color_for(m["shoulder_tilt"], self.level_tol)
+        hip_col = self._color_for(m["hip_tilt"], self.level_tol)
+        cv2.line(frame, p[self.L_SHO], p[self.R_SHO], sho_col, 3)
+        cv2.line(frame, p[self.L_HIP], p[self.R_HIP], hip_col, 3)
+
+        rows = [
+            self._row("Shoulders level", m["shoulder_tilt"], self.level_tol,
+                      "right shoulder lower", "left shoulder lower"),
+            self._row("Hips level", m["hip_tilt"], self.level_tol,
+                      "right hip lower", "left hip lower"),
+        ]
+        self._draw_rows(frame, rows, origin=(0, 0))
+        return frame
+
+    def show_rotation(self, frame, m):
+        """Shoulder and hip joints, coloured by how far the trunk is rotated."""
+        if m is None:
+            return frame
+        p = m["pts"]
+        sho_col = self._color_for(m["shoulder_yaw"], self.rotation_tol)
+        hip_col = self._color_for(m["hip_yaw"], self.rotation_tol)
+        for i in (self.L_SHO, self.R_SHO):
+            cv2.circle(frame, p[i], 9, sho_col, -1)
+        for i in (self.L_HIP, self.R_HIP):
+            cv2.circle(frame, p[i], 9, hip_col, -1)
+
+        rows = [
+            self._row("Shoulder rotation", m["shoulder_yaw"], self.rotation_tol,
+                      "right shoulder back", "left shoulder back"),
+            self._row("Hip rotation", m["hip_yaw"], self.rotation_tol,
+                      "right hip back", "left hip back"),
+        ]
+        self._draw_rows(frame, rows, origin=(0, 80))
+        return frame
+
+    def draw_results(self, frame, m):
+        """Combined text overlay with all metrics."""
+        if m is None:
+            cv2.putText(frame, "Trunk not visible", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.RED, 2)
+            return frame
+
+        p = m["pts"]
+        sho_col = self.GREEN if m["shoulders_level"] else self.RED
+        hip_col = self.GREEN if m["hips_level"] else self.RED
+        cv2.line(frame, p[self.L_SHO], p[self.R_SHO], sho_col, 3)
+        cv2.line(frame, p[self.L_HIP], p[self.R_HIP], hip_col, 3)
+
+        lines = [
+            (f"Rotation: {m['shoulder_yaw']:+.1f} deg", m["rotation_ok"]),
+            (f"Twist (sho-hip): {m['twist']:+.1f} deg", abs(m["twist"]) <= self.rotation_tol),
+            (f"Shoulder tilt: {m['shoulder_tilt']:+.1f} deg", m["shoulders_level"]),
+            (f"Hip tilt: {m['hip_tilt']:+.1f} deg", m["hips_level"]),
+        ]
+        if "shoulder_angle_2d" in m:
+            lines.append((f"2D rotation check: {m['shoulder_angle_2d']:.1f} deg", True))
+
+        y = 30
+        for text, ok in lines:
+            cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6, self.GREEN if ok else self.RED, 2)
+            y += 26
+
+        verdict = "POSITION OK" if m["all_ok"] else "ADJUST POSITION"
+        cv2.putText(frame, verdict, (10, y + 10), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9, self.GREEN if m["all_ok"] else self.RED, 3)
+        return frame
+
+    def print_results(self, m):
+        if m is None:
+            print("Trunk not visible")
+            return
+        print(f"rotation={m['shoulder_yaw']:+.1f}  twist={m['twist']:+.1f}  "
+              f"sho_tilt={m['shoulder_tilt']:+.1f}  hip_tilt={m['hip_tilt']:+.1f}  "
+              f"-> {'OK' if m['all_ok'] else 'ADJUST'}")
+
+
+
 # ============================================================
 # VIDEO LOOP
 # ============================================================
@@ -477,6 +725,7 @@ class VideoLoop:
 
         self.trunk_pose_assessment = TrunkPoseAssessment(model_asset_path=model_asset_path)
         self.trunk_anatomical_line = TrunkAnatomicalLine()
+        self.trunk_positioning_tracker = TrunkPositioningTracker()
         self.switches = Switches()
 
     def process_frame(self, frame):
@@ -539,6 +788,14 @@ class VideoLoop:
                 self.trunk_anatomical_line.draw_iliac_crest_line(frame, pose_landmarks, frame.shape)
             if sw["asis"]:
                 self.trunk_anatomical_line.draw_asis_line(frame, pose_landmarks, frame.shape)
+
+        # --- Trunk positioning assessment ---
+        h, w = frame.shape[:2]
+        trunk_m = self.trunk_positioning_tracker.update(result, w, h)
+        if sw["trunk_level"]:
+            self.trunk_positioning_tracker.show_level(frame, trunk_m)
+        if sw["trunk_rotation"]:
+            self.trunk_positioning_tracker.show_rotation(frame, trunk_m)
 
         return frame
 

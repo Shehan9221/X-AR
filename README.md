@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # X-AR — Radiography Positioning Guidance
 
 Desktop GUI (PyQt5) for checking patient positioning before an X-ray. It shows a
@@ -124,4 +124,4 @@ requirements.txt
 =======
 # X-AR
 Real-time radiographic positioning guidance using MediaPipe and a PyQt interface to detect anatomical landmarks and check body and head alignment.
->>>>>>> 0238d0b791bbd455beae14862b1c8d88aac98ee6
+

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # X-AR — Radiography Positioning Guidance
 
 Desktop GUI (PyQt5) for checking patient positioning before an X-ray. It shows a
@@ -120,3 +121,7 @@ requirements.txt
   index (468/473 irises, 33/263 eye corners, 10…152 midline).
 - `MIRROR_PREVIEW` is `False`; enable it only together with mirroring the
   frames, or left/right advice will be inverted.
+=======
+# X-AR
+Real-time radiographic positioning guidance using MediaPipe and a PyQt interface to detect anatomical landmarks and check body and head alignment.
+>>>>>>> 0238d0b791bbd455beae14862b1c8d88aac98ee6

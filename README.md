@@ -28,8 +28,8 @@ python main.py
   - Status: four cards with the measured angle, coloured badge
     (green OK / amber Adjust / grey Not detected) and a short instruction.
   - Guidelines: switches for skeleton, landmarks, head MSL/IPL line,
-    shoulder line, hip line, trunk midline (MSL), ASIS line, hip level and
-    angle labels.
+    shoulder line, hip line, trunk midline (MSL), diaphragm level, ASIS line,
+    iliac crest level, hip level and angle labels.
 - Video area keeps aspect ratio with black letterboxing; double-click toggles
   fullscreen.
 - Transport bar: play/pause, stop, seek slider with elapsed/total time in video

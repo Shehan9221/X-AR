@@ -434,7 +434,7 @@ class TrunkAnatomicalLine:
     def draw_iliac_crest_line(self, frame, pose_landmarks, frame_shape, k=0.20):
         return self.draw_landmark_line(frame, pose_landmarks, frame_shape, k, "Iliac Crest", (0, 200, 255))
 
-    def draw_asis_line(self, frame, pose_landmarks, frame_shape, k=0.08):
+    def draw_asis_line(self, frame, pose_landmarks, frame_shape, k=0.1):
         return self.draw_landmark_line(frame, pose_landmarks, frame_shape, k, "ASIS", (0, 255, 0))
 
     def draw_mid_sagittal_line(self, frame, Rshoulder, Lshoulder, Rhip, Lhip):

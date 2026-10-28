@@ -56,7 +56,7 @@ def preload_core():
 @dataclass
 class TrunkLine:
     """One anatomical reference line as normalized (x, y) endpoints."""
-    kind: str  # "msl" | "asis" | "hip_level"
+    kind: str  # "msl" | "diaphragm" | "asis" | "iliac_crest" | "hip_level"
     p1: Tuple[float, float]
     p2: Tuple[float, float]
 
@@ -66,7 +66,7 @@ class PoseResult:
     """One frame's worth of pose analysis."""
     landmarks: List[Tuple[float, float, float]] = field(default_factory=list)  # normalized pose (x, y, visibility)
     head_landmarks: Dict[int, Tuple[float, float, float]] = field(default_factory=dict)  # face-mesh points by index
-    trunk_lines: List[TrunkLine] = field(default_factory=list)  # ASIS / trunk MSL / hip level
+    trunk_lines: List[TrunkLine] = field(default_factory=list)  # diaphragm / ASIS / iliac crest / trunk MSL / hip level
     timestamp_ms: int = 0
 
     head_rotation_deg: float = 0.0
@@ -101,6 +101,8 @@ def _status(value: float, key: str) -> str:
 # extend_down=100).
 
 ASIS_K = 0.08
+ILIAC_CREST_K = 0.20
+DIAPHRAGM_K = 0.55
 HIP_LEVEL_K = 0.0
 TRUNK_LINE_WIDTH_RATIO = 0.8
 MSL_EXTEND_UP_PX = 25
@@ -165,7 +167,9 @@ def _trunk_lines_from_geometry(geo, w, h):
 
     return [
         TrunkLine("msl", *segment(top, bottom)),
+        TrunkLine("diaphragm", *segment(*horizontal(DIAPHRAGM_K))),
         TrunkLine("asis", *segment(*horizontal(ASIS_K))),
+        TrunkLine("iliac_crest", *segment(*horizontal(ILIAC_CREST_K))),
         TrunkLine("hip_level", *segment(*horizontal(HIP_LEVEL_K))),
     ]
 

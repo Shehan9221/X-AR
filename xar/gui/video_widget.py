@@ -23,7 +23,9 @@ MIDLINE_INDICES = [10, 168, 4, 164, 0, 17, 152]
 # Trunk reference lines -> (label, colour key, overlay flag).
 TRUNK_LINE_SPECS = {
     "msl": ("MSL", "trunk_msl", "show_trunk_msl"),
+    "diaphragm": ("Diaphragm", "diaphragm", "show_diaphragm_line"),
     "asis": ("ASIS", "asis", "show_asis_line"),
+    "iliac_crest": ("Iliac crest", "iliac_crest", "show_iliac_crest"),
     "hip_level": ("Hip level", "hip_level", "show_hip_level"),
 }
 
@@ -47,7 +49,9 @@ class VideoOverlay(QWidget):
         self.show_shoulder_line = True
         self.show_hip_line = True
         self.show_trunk_msl = True
+        self.show_diaphragm_line = True
         self.show_asis_line = True
+        self.show_iliac_crest = True
         self.show_hip_level = True
         self.show_angle_labels = True
 
@@ -139,10 +143,16 @@ class VideoOverlay(QWidget):
                              "MSL", config.OVERLAY_COLORS["head_msl"])
 
     def _draw_trunk_reference_lines(self, painter, result):
-        """ASIS, mid-sagittal and hip-level lines from the torso reference."""
-        # ASIS and hip level sit close together, so their labels are placed on
-        # opposite sides of the line to avoid overlapping.
-        label_offsets = {"msl": (6, 0), "asis": (6, -20), "hip_level": (6, 4)}
+        """Diaphragm, ASIS, iliac crest, mid-sagittal and hip-level lines."""
+        # The lower reference lines sit close together, so their labels are
+        # placed on different sides of their lines to avoid overlapping.
+        label_offsets = {
+            "msl": (6, 0),
+            "diaphragm": (6, 4),
+            "asis": (6, -20),
+            "iliac_crest": (6, -20),
+            "hip_level": (6, 4),
+        }
         for line in result.trunk_lines:
             spec = TRUNK_LINE_SPECS.get(line.kind)
             if spec is None:

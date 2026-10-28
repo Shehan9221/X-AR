@@ -162,14 +162,17 @@ class SidePanel(QWidget):
         self.shoulder_line_toggle = self._toggle("Shoulder line")
         self.hip_line_toggle = self._toggle("Hip line")
         self.trunk_msl_toggle = self._toggle("Trunk midline (MSL)")
+        self.diaphragm_toggle = self._toggle("Diaphragm level")
         self.asis_toggle = self._toggle("ASIS line")
+        self.iliac_crest_toggle = self._toggle("Iliac crest level")
         self.hip_level_toggle = self._toggle("Hip level")
         self.angle_labels_toggle = self._toggle("Angle labels")
 
         for widget in (
             self.skeleton_toggle, self.landmarks_toggle, self.head_line_toggle,
             self.shoulder_line_toggle, self.hip_line_toggle, self.trunk_msl_toggle,
-            self.asis_toggle, self.hip_level_toggle, self.angle_labels_toggle,
+            self.diaphragm_toggle, self.asis_toggle, self.iliac_crest_toggle,
+            self.hip_level_toggle, self.angle_labels_toggle,
         ):
             layout.addWidget(widget)
             widget.toggled.connect(self._emit_overlay_flags)
@@ -215,7 +218,9 @@ class SidePanel(QWidget):
             "show_shoulder_line": self.shoulder_line_toggle.isChecked(),
             "show_hip_line": self.hip_line_toggle.isChecked(),
             "show_trunk_msl": self.trunk_msl_toggle.isChecked(),
+            "show_diaphragm_line": self.diaphragm_toggle.isChecked(),
             "show_asis_line": self.asis_toggle.isChecked(),
+            "show_iliac_crest": self.iliac_crest_toggle.isChecked(),
             "show_hip_level": self.hip_level_toggle.isChecked(),
             "show_angle_labels": self.angle_labels_toggle.isChecked(),
         }

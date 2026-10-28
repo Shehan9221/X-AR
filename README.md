@@ -122,6 +122,5 @@ requirements.txt
 - `MIRROR_PREVIEW` is `False`; enable it only together with mirroring the
   frames, or left/right advice will be inverted.
 =======
-# X-AR
-Real-time radiographic positioning guidance using MediaPipe and a PyQt interface to detect anatomical landmarks and check body and head alignment.
+
 
